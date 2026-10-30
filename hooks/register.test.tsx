@@ -41,6 +41,8 @@ type World = {
   usage?: StepUsage
   sessionUsd?: number
   toolUses?: { name: string; input: Record<string, unknown> }[]
+  /** The text the model writes in a step. */
+  said?: string
   /** The option the person picks when asked, and the questions asked so far. */
   answer?: string
   asked?: string[]
@@ -65,7 +67,7 @@ const engine = (on: (...args: never[]) => unknown, clock: { now: number }, world
   }) as never)
   hook('turn.step', (async function* (_: unknown, e: { turnId: string; index: number }) {
     world.sent = (world.sent ?? 0) + 1
-    return { turnId: e.turnId, index: e.index, answer: '', toolUses: world.toolUses ?? [], usage: world.usage ?? null }
+    return { turnId: e.turnId, index: e.index, answer: world.said ?? '', toolUses: world.toolUses ?? [], usage: world.usage ?? null }
   }) as never)
   hook('session.usage', () => ({ value: world.sessionUsd === undefined ? {} : { cost: { usd: world.sessionUsd } } }))
   hook('agent.list', () => ({
@@ -171,7 +173,7 @@ test('a running subagent shows the estimate on its running task only, and cuts e
     `● Main  opus-5.5 · high`,
     '├─ ✓ Step m1',
     '├─ ● Builder  sonnet · low',
-    '│     … 2 earlier',
+    '│     … 2 earlier ▸',
     '│  ├─ ✓ Step t3',
     '│  ├─ ✓ Step t4',
     '│  ├─ ✓ Step t5',
@@ -183,6 +185,40 @@ test('a running subagent shows the estimate on its running task only, and cuts e
     '  tasks    8/10 done',
     '  status   working (1 subagent)',
   ])
+})
+
+test('pressing the earlier line shows all of a node\'s tasks, and pressing it again hides them', async ($, on) => {
+  engine(on as never, { now: 1000 })
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  for (const n of [1, 2, 3, 4, 5, 6, 7]) await $.tool.call({ tool: 'Read', file_path: `/a/f${n}.md` })
+
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  expect(await ui.find({ type: 'Text', text: /^… 2 earlier ▸$/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /Read f1\.md/ })).toBeUndefined()
+
+  await ui.press({ key: 'toggle-main' })
+  expect(await ui.find({ type: 'Text', text: /^▾ hide 2 earlier$/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /Read f1\.md/ })).toBeDefined()
+
+  await ui.press({ key: 'toggle-main' })
+  expect(await ui.find({ type: 'Text', text: /Read f1\.md/ })).toBeUndefined()
+  await ui.unmount()
+})
+
+test('the text the model writes shows before the tool calls of its step, on one line, and is not counted as a task', async ($, on) => {
+  const world: World = { said: 'First I look\n\nat the tree.' }
+  engine(on as never, { now: 1000 }, world)
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  await priced($ as never)
+  await $.tool.call({ tool: 'Read', file_path: '/a/tree.ts' })
+
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  const rows = await rowsOf(ui)
+  const said = rows.findIndex(r => r.includes('» First I look at the tree.'))
+  expect(said).toBeGreaterThan(-1)
+  expect(rows.findIndex(r => r.includes('Read tree.ts'))).toBeGreaterThan(said)
+  expect(rows.some(r => /tasks\s+1\/1 done/.test(r))).toBe(true)
+  await ui.unmount()
 })
 
 test('a stub for a subagent no spawn announced is named from the agent list', async ($, on) => {
@@ -394,7 +430,7 @@ test('cost accumulates per agent across steps, main apart from subagents, with t
   const rows = await frame(ui)
   expect(rows[0]).toMatch(/^✓ Main {2}x · default · \$1\.20$/)
   expect(rows[1]).toMatch(/Helper {2}x · default · \$3\.45 · 0s$/)
-  expect(rows.slice(rows.findIndex(r => r.startsWith('Details')))).toEqual(['Details  Cost  Skills & rules ', ' ', 'Costs per prompt and per session', '  prompt   $1.23', '  session  $1.23', expect.stringMatching(/^  cache    warm until \d\d:\d\d \(1h TTL, assumed\)$/), ' ', '  Top 2 most expensive in the session', '   1.   $3.45  Helper', '   2.   $1.20  main'])
+  expect(rows.slice(rows.findIndex(r => r.startsWith('Details')))).toEqual(['Details  Cost  Skills & rules ', ' ', 'Costs per prompt and per session', '  prompt   $1.23', '  session  $1.23', expect.stringMatching(/^  cache    warm until \d\d:\d\d \(1h TTL, assumed\)$/), ' ', '  Top 2 most expensive in the session', '   1.   $3.45 ▸ Helper', '   2.   $1.20 ▸ main'])
   await ui.unmount()
 })
 
@@ -410,7 +446,7 @@ test('a subagent step refreshes the cost lines while main takes no step, as with
 
   const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
   const rows = await frame(ui)
-  expect(rows.slice(rows.findIndex(r => r.startsWith('Details')))).toEqual(['Details  Cost  Skills & rules ', ' ', 'Costs per prompt and per session', '  prompt   $0.20', '  session  $0.20', ' ', '  Top 1 most expensive in the session', '   1.   $0.20  Review'])
+  expect(rows.slice(rows.findIndex(r => r.startsWith('Details')))).toEqual(['Details  Cost  Skills & rules ', ' ', 'Costs per prompt and per session', '  prompt   $0.20', '  session  $0.20', ' ', '  Top 1 most expensive in the session', '   1.   $0.20 ▸ Review'])
   await ui.unmount()
 })
 
@@ -784,10 +820,41 @@ test('two subagent steps and a main step all show in the Cost tab ranking, prici
   await ui.unmount()
   expect(rows.slice(rows.findIndex(r => r.includes('Top 3 most expensive')))).toEqual([
     '  Top 3 most expensive in the session',
-    '   1.   $2.00  Pricey',
-    '   2.   $0.40  main',
-    '   3.   $0.20  Cheap',
+    '   1.   $2.00 ▸ Pricey',
+    '   2.   $0.40 ▸ main',
+    '   3.   $0.20 ▸ Cheap',
   ])
+})
+
+test('pressing an entry of the Cost ranking opens what it cost per kind of token and its priciest requests', async ($, on) => {
+  const world: World = { sessionUsd: 1, said: 'Looking at the tree.' }
+  engine(on as never, { now: 1000 }, world)
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  await $.prompt.submit({ text: 'why so pricey' } as never)
+
+  // Opus 5.5: $4 in, $20 out per MTok. 100k in = $0.40, 10k out = $0.20.
+  world.usage = usageOf('claude-opus-5-5', 100_000, 10_000)
+  await step($ as never, 0)
+  world.said = ''
+  world.usage = usageOf('claude-opus-5-5', 50_000, 0)
+  await step($ as never, 1)
+
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  expect((await frame(ui)).some(r => r.includes('$0.80 ▸ "why so pricey"'))).toBe(true)
+  await ui.press({ key: 'toggle-cost:prompt:1' })
+  const rows = await frame(ui)
+  const at = rows.findIndex(r => r.includes('$0.80 ▾ "why so pricey"'))
+  expect(rows.slice(at + 1, at + 10).map(r => r.trim())).toEqual([
+    '2 requests',
+    'cache write  $0.00  0 tok',
+    'cache read   $0.00  0 tok',
+    'output       $0.20  10k tok',
+    'input        $0.60  150k tok',
+    'priciest requests',
+    '$0.60  » Looking at the tree.',
+    '$0.20  answer',
+  ])
+  await ui.unmount()
 })
 
 test('a typed prompt keeps the one it replaces in the history, the last ten only, a running loop frozen', () => {

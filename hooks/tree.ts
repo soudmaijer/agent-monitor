@@ -1,6 +1,6 @@
-import type { AgentMonitorCache, AgentMonitorRow, AgentMonitorState, AgentMonitorTask } from '../types'
+import type { AgentMonitorBreakdown, AgentMonitorCache, AgentMonitorRow, AgentMonitorState, AgentMonitorTask } from '../types'
 import { truncate } from './describe'
-import { formatSpend, formatUsd } from './pricing'
+import { formatSpend, formatTokens, formatUsd } from './pricing'
 import { bar, countProgress, expectedDurationMs, progressOf } from './progress'
 
 const SHOWN_TASKS = 5
@@ -29,6 +29,8 @@ export type TreeLine = {
   isRule?: boolean
   /** A coloured label drawn in front of `text`, such as `Prompt ` on the prompt's first line. */
   lead?: string
+  /** Set on the `… N earlier` line: the id of the node whose earlier children it shows or hides. */
+  toggles?: string
 }
 
 export type FooterTab = 'cost' | 'skills'
@@ -49,14 +51,14 @@ const availableTabs = (state: AgentMonitorState): FooterTab[] => {
 }
 
 /** The rows under the tab bar for the selected tab. */
-const tabLines = (state: AgentMonitorState, tab: FooterTab, now: number): TreeLine[] => {
+const tabLines = (state: AgentMonitorState, tab: FooterTab, now: number, expanded: string[]): TreeLine[] => {
   if (tab === 'cost') {
     const sessionUsd = state.sessionUsd ?? 0
     return [
       footerItem('prompt', formatUsd(sessionUsd - (state.promptStartUsd ?? 0))),
       footerItem('session', formatUsd(sessionUsd)),
       ...(state.cache !== undefined ? [footerItem('cache', cacheStatus(state.cache, now))] : []),
-      ...topCostLines(state),
+      ...topCostLines(state, expanded),
     ]
   }
   const promptSkills = state.promptSkills ?? []
@@ -82,16 +84,38 @@ const cacheStatus = (cache: AgentMonitorCache, now: number): string => {
   return `${state} (${ttl} TTL, ${cache.isMeasured ? 'measured' : 'assumed'})`
 }
 
-/** The session's most expensive prompts and subagents, priciest first. */
-const topCostLines = (state: AgentMonitorState): TreeLine[] => {
+/** The session's most expensive prompts and subagents, priciest first; a pressed one opens what it consists of. */
+const topCostLines = (state: AgentMonitorState, expanded: string[]): TreeLine[] => {
   const top = state.topCosts ?? []
   if (top.length === 0) return []
   return [
     line({ isFooter: true }),
     line({ isFooter: true, text: `  Top ${top.length} most expensive in the session` }),
-    ...top.map((c, i) =>
-      line({ isFooter: true, text: `  ${String(i + 1).padStart(2)}. ${formatSpend(c).padStart(7)}  ${c.label}` }),
-    ),
+    ...top.flatMap((c, i) => {
+      const entry = `  ${String(i + 1).padStart(2)}. ${formatSpend(c).padStart(7)}`
+      if (!c.breakdown) return [line({ isFooter: true, text: `${entry}  ${c.label}` })]
+      const id = `cost:${c.key}`
+      const isOpen = expanded.includes(id)
+      const head = line({ isFooter: true, text: `${entry} ${isOpen ? '▾' : '▸'} ${c.label}`, toggles: id })
+      return isOpen ? [head, ...breakdownLines(c.breakdown)] : [head]
+    }),
+  ]
+}
+
+const BREAKDOWN_INDENT = ' '.repeat(14)
+
+/** What one entry of the top list consists of: per kind of token, then its priciest requests. */
+const breakdownLines = (b: AgentMonitorBreakdown): TreeLine[] => {
+  const part = (name: string, p: { usd: number; tokens: number }) =>
+    line({ isFooter: true, text: `${BREAKDOWN_INDENT}${name.padEnd(12)}${formatUsd(p.usd).padStart(6)}  ${formatTokens(p.tokens)}` })
+  return [
+    line({ isFooter: true, isDim: true, text: `${BREAKDOWN_INDENT}${b.steps} ${b.steps === 1 ? 'request' : 'requests'}` }),
+    part('cache write', b.cacheWrite),
+    part('cache read', b.cacheRead),
+    part('output', b.output),
+    part('input', b.input),
+    line({ isFooter: true, isDim: true, text: `${BREAKDOWN_INDENT}priciest requests` }),
+    ...b.top.map(s => line({ isFooter: true, text: `${BREAKDOWN_INDENT}  ${formatUsd(s.usd).padStart(6)}  ${s.label}` })),
   ]
 }
 
@@ -104,7 +128,7 @@ const loadedLists = (promptTotal: number, prompt: ListItem[], sessionTotal: numb
     ? footerList('prompt & session', sessionTotal, session)
     : [...footerList('prompt', promptTotal, prompt), ...footerList('session', sessionTotal, session)]
 
-type TreeContext = { state: AgentMonitorState; now: number; columns: number; expectedMs: number }
+type TreeContext = { state: AgentMonitorState; now: number; columns: number; expectedMs: number; expanded: string[] }
 
 const line = (over: Partial<TreeLine>): TreeLine => ({
   prefix: '',
@@ -156,13 +180,16 @@ const childrenOf = (row: AgentMonitorRow, state: AgentMonitorState): Child[] => 
   return kids.sort((a, b) => (a.task?.seq ?? a.agent?.seq ?? 0) - (b.task?.seq ?? b.agent?.seq ?? 0))
 }
 
-/** The lines of a node's children: the last few, with a count of the earlier ones. */
+/** The lines of a node's children: the last few, with a count of the earlier ones, or all of them once expanded. */
 const childLines = (row: AgentMonitorRow, rest: string, ctx: TreeContext): TreeLine[] => {
   const all = childrenOf(row, ctx.state)
-  const shown = all.slice(-SHOWN_TASKS)
+  const earlier = Math.max(0, all.length - SHOWN_TASKS)
+  const isExpanded = ctx.expanded.includes(row.id)
+  const shown = isExpanded ? all : all.slice(-SHOWN_TASKS)
   const lines: TreeLine[] = []
-  if (all.length > shown.length) {
-    lines.push(line({ prefix: `${rest}   `, text: `… ${all.length - shown.length} earlier`, isDim: true }))
+  if (earlier > 0) {
+    const text = isExpanded ? `▾ hide ${earlier} earlier` : `… ${earlier} earlier ▸`
+    lines.push(line({ prefix: `${rest}   `, text, isDim: true, toggles: row.id }))
   }
   shown.forEach((kid, index) => {
     const isLast = index === shown.length - 1
@@ -191,7 +218,9 @@ const childLines = (row: AgentMonitorRow, rest: string, ctx: TreeContext): TreeL
     } else {
       const task = kid.task
       lines.push(
-        line({ prefix, status: task.status, text: task.label, isBold: task.status === 'running', isDim: task.status === 'done' }),
+        task.isText
+          ? line({ prefix, text: `» ${task.label}`, isDim: true })
+          : line({ prefix, status: task.status, text: task.label, isBold: task.status === 'running', isDim: task.status === 'done' }),
       )
     }
   })
@@ -224,9 +253,9 @@ const promptLines = (prompt: string, columns: number, queued: string[] = []): Tr
 /** The whole pane: Main with its tree, then the subagent count (hidden when none). */
 export const buildTree = (
   state: AgentMonitorState,
-  options: { now: number; columns: number; tab?: FooterTab },
+  options: { now: number; columns: number; tab?: FooterTab; expanded?: string[] },
 ): TreeLine[] => {
-  const ctx = { state, ...options, expectedMs: expectedDurationMs(state.agents) }
+  const ctx = { state, ...options, expanded: options.expanded ?? [], expectedMs: expectedDurationMs(state.agents) }
   const isBusy = state.main.status === 'running'
   const header = line({
     status: isBusy ? 'running' : 'done',
@@ -254,7 +283,7 @@ export const buildTree = (
     lines.push(line({ isFooter: true, tabs, tab }))
     lines.push(line({ isFooter: true }))
     lines.push(line({ isFooter: true, text: TAB_DESCRIPTIONS[tab], isDim: true }))
-    lines.push(...tabLines(state, tab, options.now))
+    lines.push(...tabLines(state, tab, options.now, ctx.expanded))
   }
   const hint = contextHint(state.contextPercent)
   if (hint !== undefined) {

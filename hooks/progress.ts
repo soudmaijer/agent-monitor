@@ -16,7 +16,7 @@ export const countAgents = (agents: AgentMonitorRow[]) => ({
 
 /** Tasks finished (done or failed) against all tasks of main and every subagent, e.g. `{ done: 7, total: 9 }`. */
 export const countTasks = (main: AgentMonitorRow, agents: AgentMonitorRow[]) => {
-  const tasks = [main, ...agents].flatMap(row => row.tasks)
+  const tasks = [main, ...agents].flatMap(row => row.tasks).filter(t => !t.isText)
   return {
     done: tasks.filter(t => t.status === 'done' || t.status === 'failed').length,
     total: tasks.length,

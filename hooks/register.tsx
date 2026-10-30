@@ -6,7 +6,7 @@ import { APPROVAL_USD, ASSUMED_TTL, SHORT_TTL_MS, coldReason, contextTokensOf, m
 import type { CacheTtl, LastStep } from './cache-guard'
 import { describeTool } from './describe'
 import { addUnique, loadedByTool, pathsInText, rulesInText, skillsInText, textOf } from './loaded'
-import { costOf, rankCost, totalTokens } from './pricing'
+import { costOf, rankCost, totalTokens, withStep } from './pricing'
 import type { StepUsage } from './pricing'
 import { isTypedPrompt, promoteQueued, viewOf, withPrompt } from './prompt'
 import { TAB_LABELS, buildTree, fitLines } from './tree'
@@ -49,6 +49,9 @@ const footerTab = atom({ plugin: 'agent-monitor', key: 'footerTab' } as const, '
 // The earlier prompt the pane shows, as an index into `history`; LIVE shows the prompt running now.
 const LIVE = -1
 const viewing = atom({ plugin: 'agent-monitor', key: 'viewing' } as const, LIVE, { shape: 'viewing-1' })
+
+// The nodes whose earlier children the person expanded, by row id.
+const expanded = atom({ plugin: 'agent-monitor', key: 'expanded' } as const, [] as string[], { shape: 'expanded-1' })
 
 // A counter the running timer bumps so the pane redraws and the estimated bars advance.
 const tick = atom({ plugin: 'agent-monitor', key: 'tick' } as const, 0, { shape: 'tick-1' })
@@ -398,6 +401,16 @@ export const register: Register = on => {
     await recoverSkipped($, e.agentId)
 
     const result = yield* next(e)
+    // The text the model wrote in this step comes before the tool calls it asked for.
+    const said = result?.answer?.replace(/\s+/g, ' ').trim()
+    if (said) {
+      await update($, monitor, s => {
+        const seq = s.seq + 2
+        const text = { id: `text-${seq}`, label: said, seq, status: 'done' as const, isText: true }
+        const changed = change(s, e.agentId, now, r => ({ ...r, tasks: [...r.tasks, text].slice(-KEEP_TASKS) }))
+        return { ...changed, seq: Math.max(changed.seq, seq) }
+      })
+    }
     if (result?.toolUses?.length) {
       const seq = (await read($, monitor)).seq
       const uses = result.toolUses
@@ -418,13 +431,17 @@ export const register: Register = on => {
         const cache = { expiresAt: mainStep.at + cacheTtl.ms, ttlMs: cacheTtl.ms, isMeasured: cacheTtl.isMeasured }
         await update($, monitor, s => ({ ...s, cache }))
       }
-      const usd = costOf(usage, ttlOf(e.agentId ?? 'main'))
+      const ttlMs = ttlOf(e.agentId ?? 'main')
+      const usd = costOf(usage, ttlMs)
+      // What the request did: the text it wrote, else the tool calls it asked for.
+      const did = said ? `» ${said}` : (result.toolUses ?? []).map(use => describeTool(use.name, (use.input ?? {}) as Record<string, unknown>)).join(', ')
       await update($, monitor, s =>
         change(s, e.agentId, now, r => ({
           ...r,
           usd: r.usd + (usd ?? 0),
           tokens: r.tokens + totalTokens(usage),
           isPriced: r.isPriced && usd !== undefined,
+          breakdown: withStep(r.breakdown, usage, ttlMs, did || 'answer'),
         })),
       )
       await update($, monitor, s => {
@@ -432,10 +449,10 @@ export const register: Register = on => {
         if (!row) return s
         const entry = e.agentId
           ? { key: `agent:${row.id}`, label: row.description || row.subagentType || 'agent' }
-          : { key: `prompt:${s.promptId ?? 0}`, label: s.prompt === '' ? 'main' : `Prompt: "${s.prompt}"` }
+          : { key: `prompt:${s.promptId ?? 0}`, label: s.prompt === '' ? 'main' : `"${s.prompt}"` }
         return {
           ...s,
-          topCosts: rankCost(s.topCosts, { ...entry, usd: row.usd, tokens: row.tokens, isPriced: row.isPriced }),
+          topCosts: rankCost(s.topCosts, { ...entry, usd: row.usd, tokens: row.tokens, isPriced: row.isPriced, breakdown: row.breakdown }),
         }
       })
     }
@@ -571,7 +588,9 @@ export const register: Register = on => {
     // The Rules tab of an earlier version now lives in the Skills & rules tab.
     const stored = await read($, footerTab)
     const tab = stored === 'rules' ? 'skills' : stored
-    const lines = fitLines(buildTree(state, { now, columns, tab }), rows, columns)
+    const open = await read($, expanded)
+    const lines = fitLines(buildTree(state, { now, columns, tab, expanded: open }), rows, columns)
+    const toggle = (id: string) => update($, expanded, ids => (ids.includes(id) ? ids.filter(x => x !== id) : [...ids, id]))
 
     return (
       <Box flexDirection="column">
@@ -605,6 +624,13 @@ export const register: Register = on => {
                   : <Text>{` ${TAB_LABELS[t]} `}</Text>}
               </Button>
             ))}
+          </Box>
+        ) : l.toggles !== undefined ? (
+          <Box flexDirection="row">
+            <Text dimColor>{l.prefix}</Text>
+            <Button key={`toggle-${l.toggles}`} plain onPress={() => toggle(l.toggles!)}>
+              <Text dimColor={l.isDim}>{l.text}</Text>
+            </Button>
           </Box>
         ) : (
           <Box flexDirection="row">

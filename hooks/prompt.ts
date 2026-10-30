@@ -52,7 +52,7 @@ export const withPrompt = (s: AgentMonitorState, text: string): AgentMonitorStat
     promptRules: [],
     prompt,
     queuedPrompts: undefined,
-    main: { ...s.main, tasks: [], usd: 0, tokens: 0, isPriced: true },
+    main: { ...s.main, tasks: [], usd: 0, tokens: 0, isPriced: true, breakdown: undefined },
     agents: s.agents.filter(a => a.status === 'running'),
   }
 }

@@ -1,4 +1,4 @@
-import type { AgentMonitorCost } from '../types'
+import type { AgentMonitorBreakdown, AgentMonitorCost } from '../types'
 /** Token counts of one model request, as `turn.step` reports them. */
 export type StepUsage = {
   model: string
@@ -52,17 +52,47 @@ const priceOf = (model: string): Price | undefined => {
 /** A cache write costs 1.25x the input price for the 5 minute TTL and 2x for the 1 hour TTL. */
 export const writeFactorOf = (ttlMs: number) => (ttlMs > 5 * 60 * 1000 ? 2 : 1.25)
 
-/** The estimated USD cost of one request whose cache writes run on `ttlMs`, or undefined for a model with no listed price. */
-export const costOf = (usage: StepUsage, ttlMs: number): number | undefined => {
+/** The estimated USD cost of one request per kind of token, its cache writes on `ttlMs`; undefined for a model with no listed price. */
+export const costPartsOf = (usage: StepUsage, ttlMs: number) => {
   const price = priceOf(usage.model)
   if (!price) return undefined
-  return (
-    (usage.input_tokens * price.input +
-      usage.output_tokens * price.output +
-      usage.cache_read_input_tokens * price.cacheRead +
-      usage.cache_creation_input_tokens * price.input * writeFactorOf(ttlMs)) /
-    1_000_000
-  )
+  return {
+    input: (usage.input_tokens * price.input) / 1_000_000,
+    output: (usage.output_tokens * price.output) / 1_000_000,
+    cacheRead: (usage.cache_read_input_tokens * price.cacheRead) / 1_000_000,
+    cacheWrite: (usage.cache_creation_input_tokens * price.input * writeFactorOf(ttlMs)) / 1_000_000,
+  }
+}
+
+/** The estimated USD cost of one request whose cache writes run on `ttlMs`, or undefined for a model with no listed price. */
+export const costOf = (usage: StepUsage, ttlMs: number): number | undefined => {
+  const parts = costPartsOf(usage, ttlMs)
+  return parts && parts.input + parts.output + parts.cacheRead + parts.cacheWrite
+}
+
+const TOP_STEPS = 3
+const NO_PART = { usd: 0, tokens: 0 }
+
+/** A breakdown with one more priced request in it, labelled with what the request did. */
+export const withStep = (
+  breakdown: AgentMonitorBreakdown | undefined,
+  usage: StepUsage,
+  ttlMs: number,
+  label: string,
+): AgentMonitorBreakdown | undefined => {
+  const parts = costPartsOf(usage, ttlMs)
+  if (!parts) return breakdown
+  const b = breakdown ?? { steps: 0, cacheWrite: NO_PART, cacheRead: NO_PART, output: NO_PART, input: NO_PART, top: [] }
+  const add = (part: { usd: number; tokens: number }, usd: number, tokens: number) => ({ usd: part.usd + usd, tokens: part.tokens + tokens })
+  const usd = parts.input + parts.output + parts.cacheRead + parts.cacheWrite
+  return {
+    steps: b.steps + 1,
+    cacheWrite: add(b.cacheWrite, parts.cacheWrite, usage.cache_creation_input_tokens),
+    cacheRead: add(b.cacheRead, parts.cacheRead, usage.cache_read_input_tokens),
+    output: add(b.output, parts.output, usage.output_tokens),
+    input: add(b.input, parts.input, usage.input_tokens),
+    top: [...b.top, { usd, label }].sort((x, y) => y.usd - x.usd).slice(0, TOP_STEPS),
+  }
 }
 
 export const totalTokens = (usage: StepUsage): number =>

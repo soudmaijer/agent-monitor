@@ -22,6 +22,8 @@ export type AgentMonitorRow = {
   tokens: number
   /** False once a request ran on a model with no listed price: tokens are shown instead of dollars. */
   isPriced: boolean
+  /** What this loop's spend since the last typed prompt consists of. */
+  breakdown?: AgentMonitorBreakdown
   startedAt: number
   endedAt?: number
 }
@@ -32,6 +34,22 @@ export type AgentMonitorTask = {
   label: string
   seq: number
   status: 'running' | 'done' | 'failed'
+  /** A text message the model wrote between its tool calls, not a tool call. */
+  isText?: boolean
+}
+
+/** The spend and tokens of one kind of token. */
+export type AgentMonitorCostPart = { usd: number; tokens: number }
+
+/** What a loop's spend consists of: per kind of token, and its priciest requests. */
+export type AgentMonitorBreakdown = {
+  steps: number
+  cacheWrite: AgentMonitorCostPart
+  cacheRead: AgentMonitorCostPart
+  output: AgentMonitorCostPart
+  input: AgentMonitorCostPart
+  /** The priciest requests, priciest first, each with what it did. */
+  top: { usd: number; label: string }[]
 }
 
 /** What one prompt's main turns or one subagent cost in the session. */
@@ -42,6 +60,7 @@ export type AgentMonitorCost = {
   usd: number
   tokens: number
   isPriced: boolean
+  breakdown?: AgentMonitorBreakdown
 }
 
 /** An earlier prompt as it stood when the next typed prompt replaced it. */
@@ -101,6 +120,6 @@ export type AgentMonitorState = {
 
 declare module 'claude-code' {
   interface PluginState {
-    'agent-monitor': { monitor: Shaped<AgentMonitorState>; tick: Shaped<number>; footerTab: Shaped<'cost' | 'skills' | 'rules'>; viewing: Shaped<number> }
+    'agent-monitor': { monitor: Shaped<AgentMonitorState>; tick: Shaped<number>; footerTab: Shaped<'cost' | 'skills' | 'rules'>; viewing: Shaped<number>; expanded: Shaped<string[]> }
   }
 }
