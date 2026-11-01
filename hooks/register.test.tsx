@@ -48,12 +48,21 @@ type World = {
   asked?: string[]
   /** How many model requests went out. */
   sent?: number
+  /** The panes opened and closed, in order. */
+  panes?: string[]
 }
 
 const engine = (on: (...args: never[]) => unknown, clock: { now: number }, world: World = {}) => {
   const hook = on as (event: string, fn: (...args: never[]) => unknown) => void
   hook('command.register', () => ({ value: { command: 'agent-monitor' } }))
-  hook('ui.open', () => ({ value: { isPlaced: true } }))
+  hook('ui.open', ((_: unknown, e: { id: string }) => {
+    world.panes?.push(`open ${e.id}`)
+    return { value: { isPlaced: true } }
+  }) as never)
+  hook('ui.close', ((_: unknown, e: { id: string }) => {
+    world.panes?.push(`close ${e.id}`)
+    return { value: undefined }
+  }) as never)
   hook('session.start', ((_: unknown, e: { cwd: string }) => ({ cwd: e.cwd })) as never)
   hook('agent.spawn', ((_: unknown, e: { tool_use_id: string }) => ({ model: 'claude-haiku', agentId: `id-${e.tool_use_id}` })) as never)
   // A Write is refused.
@@ -1120,4 +1129,19 @@ test('the TTL is measured from requests after a pause, and the Cost tab says whi
   clock.now = 26 * MINUTE
   await priced($ as never)
   expect(world.asked?.at(-1)).toMatch(/^Cold cache: cache expired \(6 min idle\)\./)
+})
+
+test('/agent-monitor hide closes the pane and /agent-monitor opens it again', async ($, on) => {
+  const world: World = { panes: [] }
+  engine(on as never, { now: 1000 }, world)
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  world.panes = []
+
+  const hidden = await $.command.run({ command: 'agent-monitor', args: ' hide ', origin: { kind: 'composer' } } as never)
+  expect(world.panes).toEqual(['close agent-monitor'])
+  expect((hidden as { text: string }).text).toMatch(/hidden/)
+
+  const shown = await $.command.run({ command: 'agent-monitor', args: '', origin: { kind: 'composer' } } as never)
+  expect(world.panes).toEqual(['close agent-monitor', 'open agent-monitor'])
+  expect((shown as { text: string }).text).toMatch(/opened/)
 })
