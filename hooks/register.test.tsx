@@ -137,7 +137,8 @@ test('the tree nests a subagent under its spawner, with ✓, ✗ and the footer'
     await ui.unmount()
   }
 
-  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  // A taller pane, so the whole tree fits above the footer.
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal', viewport: { rows: 40, columns: 80 } } as never)
   expect(await frame(ui)).toEqual([
     `✓ Main  opus-5.5 · high`,
     '├─ ✓ List files',
@@ -150,6 +151,13 @@ test('the tree nests a subagent under its spawner, with ✓, ✗ and the footer'
     'Progress',
     '  tasks    5/6 done',
     '  status   working (1 subagent)',
+    ' ',
+    'Details  Agents ',
+    ' ',
+    'Main and subagents per type, model and effort, per prompt and per session',
+    '  prompt & session (3)',
+    '    • main · opus-5.5 · high             1×',
+    '    • Explore · claude-haiku · default   2×',
   ])
   await ui.unmount()
 })
@@ -332,13 +340,25 @@ test('Main keeps its own tasks through a subagent, a task notification and a tur
     'Progress',
     '  tasks    4/4 done',
     '  status   finished',
+    ' ',
+    'Details  Agents ',
+    ' ',
+    'Main and subagents per type, model and effort, per prompt and per session',
+    '  prompt & session (1)',
+    '    • Explore · claude-haiku · default   1×',
   ])
   await ui.unmount()
 
   // The person's next typed prompt does clear them.
   await $.prompt.submit({ text: 'volgende', ...typed } as never)
   const after = await $.ui.mount({ ...PANE, surface: 'terminal' })
-  expect(await frame(after)).toHaveLength(3)
+  // The tree is empty again; the Agents tab keeps the session's subagent, the prompt has none.
+  expect((await frame(after)).slice(-4)).toEqual([
+    'Main and subagents per type, model and effort, per prompt and per session',
+    '  prompt (0)',
+    '  session (1)',
+    '    • Explore · claude-haiku · default   1×',
+  ])
   await after.unmount()
 })
 
@@ -439,7 +459,7 @@ test('cost accumulates per agent across steps, main apart from subagents, with t
   const rows = await frame(ui)
   expect(rows[0]).toMatch(/^✓ Main {2}x · default · \$1\.20$/)
   expect(rows[1]).toMatch(/Helper {2}x · default · \$3\.45 · 0s$/)
-  expect(rows.slice(rows.findIndex(r => r.startsWith('Details')))).toEqual(['Details  Cost  Skills & rules ', ' ', 'Costs per prompt and per session', '  prompt   $1.23', '  session  $1.23', expect.stringMatching(/^  cache    warm until \d\d:\d\d \(1h TTL, assumed\)$/), ' ', '  Top 2 most expensive in the session', '   1.   $3.45 ▸ Helper', '   2.   $1.20 ▸ main'])
+  expect(rows.slice(rows.findIndex(r => r.startsWith('Details')))).toEqual(['Details  Cost  Skills & rules  Agents ', ' ', 'Costs per prompt and per session', '  prompt   $1.23', '  session  $1.23', expect.stringMatching(/^  cache    warm until \d\d:\d\d \(1h TTL, assumed\)$/), ' ', '  Top 2 most expensive in the session', '   1.   $3.45 ▸ Helper', '   2.   $1.20 ▸ main'])
   await ui.unmount()
 })
 
@@ -455,7 +475,7 @@ test('a subagent step refreshes the cost lines while main takes no step, as with
 
   const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
   const rows = await frame(ui)
-  expect(rows.slice(rows.findIndex(r => r.startsWith('Details')))).toEqual(['Details  Cost  Skills & rules ', ' ', 'Costs per prompt and per session', '  prompt   $0.20', '  session  $0.20', ' ', '  Top 1 most expensive in the session', '   1.   $0.20 ▸ Review'])
+  expect(rows.slice(rows.findIndex(r => r.startsWith('Details')))).toEqual(['Details  Cost  Skills & rules  Agents ', ' ', 'Costs per prompt and per session', '  prompt   $0.20', '  session  $0.20', ' ', '  Top 1 most expensive in the session', '   1.   $0.20 ▸ Review'])
   await ui.unmount()
 })
 
@@ -475,7 +495,7 @@ test('an unknown model shows tokens, and a typed prompt resets the spend but not
   const after = await $.ui.mount({ ...PANE, surface: 'terminal' })
   const rows = await frame(after)
   expect(rows.find(r => r.includes('Main'))).toMatch(/Main  x · default$/)
-  expect(rows.slice(rows.findIndex(r => r.startsWith('Details')))).toEqual(['Details  Cost  Skills & rules ', ' ', 'Costs per prompt and per session', '  prompt   $0.00', '  session  $5.00', expect.stringMatching(/^  cache    warm until \d\d:\d\d \(1h TTL, assumed\)$/), ' ', '  Top 1 most expensive in the session', '   1. 12k tok  main'])
+  expect(rows.slice(rows.findIndex(r => r.startsWith('Details')))).toEqual(['Details  Cost  Skills & rules  Agents ', ' ', 'Costs per prompt and per session', '  prompt   $0.00', '  session  $5.00', expect.stringMatching(/^  cache    warm until \d\d:\d\d \(1h TTL, assumed\)$/), ' ', '  Top 1 most expensive in the session', '   1. 12k tok  main'])
   await after.unmount()
 })
 
@@ -553,7 +573,7 @@ test('the footer keeps progress apart from a tab bar that shows only the selecte
     '  status   finished',
     '',
     '─'.repeat(80),
-    'cost,skills:skills',
+    'cost,skills,agents:skills',
     '',
     'Skills invoked and rules loaded per prompt and per session',
     '  prompt & session (1)',
@@ -853,15 +873,16 @@ test('pressing an entry of the Cost ranking opens what it cost per kind of token
   await ui.press({ key: 'toggle-cost:prompt:1' })
   const rows = await frame(ui)
   const at = rows.findIndex(r => r.includes('$0.80 ▾ "why so pricey"'))
-  expect(rows.slice(at + 1, at + 10).map(r => r.trim())).toEqual([
-    '2 requests',
-    'cache write  $0.00  0 tok',
-    'cache read   $0.00  0 tok',
-    'output       $0.20  10k tok',
-    'input        $0.60  150k tok',
-    'priciest requests',
-    '$0.60  » Looking at the tree.',
-    '$0.20  answer',
+  // The breakdown hangs under the entry as a tree, like the prompt's own tasks, its line starting under the rank.
+  expect(rows.slice(at + 1, at + 9)).toEqual([
+    '   ├─ 2 requests',
+    '   ├─ cache write  $0.00  0 tok',
+    '   ├─ cache read   $0.00  0 tok',
+    '   ├─ output       $0.20  10k tok',
+    '   ├─ input        $0.60  150k tok',
+    '   └─ priciest requests',
+    '      ├─  $0.60  » Looking at the tree.',
+    '      └─  $0.20  answer',
   ])
   await ui.unmount()
 })
@@ -1144,4 +1165,56 @@ test('/agent-monitor hide closes the pane and /agent-monitor opens it again', as
   const shown = await $.command.run({ command: 'agent-monitor', args: '', origin: { kind: 'composer' } } as never)
   expect(world.panes).toEqual(['close agent-monitor', 'open agent-monitor'])
   expect((shown as { text: string }).text).toMatch(/opened/)
+})
+
+test('the Agents tab groups main and subagents by type, model and effort, with the effort a step reports and their cost', async ($, on) => {
+  const world: World = {}
+  engine(on as never, { now: 1000 }, world)
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  const typed = { origin: { kind: 'composer' }, wait: false } as const
+  await $.prompt.submit({ text: 'eerste', ...typed } as never)
+  await $.agent.spawn(spawnInput('one', 'Zoek'))
+  await $.agent.spawn(spawnInput('two', 'Zoek meer'))
+  // Sonnet 5.5: $2 in per MTok, so 100k in is $0.20.
+  world.usage = usageOf('claude-sonnet-5-5', 100_000, 0)
+  for (const [agentId, effort] of [['id-one', 'low'], ['id-two', 'high']]) {
+    for await (const _ of $.turn.step({ turnId: 't', index: 0, model: 'claude-sonnet-5-5', effort, messageCount: 1, agentId } as never)) {
+      // drain
+    }
+  }
+  for (const agentId of ['id-one', 'id-two']) await $.turn.complete({ turnId: 't', agentId, answer: '', reason: 'answer' } as never)
+  await $.turn.complete({ turnId: 't', answer: '', reason: 'answer' } as never)
+  await $.prompt.submit({ text: 'tweede', ...typed } as never)
+  // Main counts once per prompt per model and effort; a step with no usage costs nothing.
+  world.usage = undefined
+  for (const index of [0, 1]) {
+    for await (const _ of $.turn.step({ turnId: 'm', index, model: 'claude-opus-5-5', effort: 'xhigh', messageCount: 1 } as never)) {
+      // drain
+    }
+  }
+  await $.agent.spawn(spawnInput('three', 'Nog een'))
+
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  const rows = await frame(ui)
+  await ui.unmount()
+  expect(rows.slice(rows.findIndex(r => r.startsWith('Details')))).toEqual([
+    'Details  Agents ',
+    ' ',
+    'Main and subagents per type, model and effort, per prompt and per session',
+    '  prompt (2)',
+    '    • main · claude-opus-5-5 · xhigh     1×',
+    '    • Explore · claude-haiku · default   1×',
+    '  session (4)',
+    '    • Explore · claude-sonnet-5-5 · low    1×    $0.20',
+    '    • Explore · claude-sonnet-5-5 · high   1×    $0.20',
+    '    • main · claude-opus-5-5 · xhigh       1×',
+    '    • Explore · claude-haiku · default     1×',
+  ])
+})
+
+test('the Agents tab stays beside Cost before any subagent ran, and says so', () => {
+  const state = { prompt: '', main: row({ id: 'main', status: 'idle' }), agents: [], seq: 0, sessionUsd: 1 } as never
+  const footer = buildTree(state, { now: 0, columns: 80, tab: 'agents' }).filter(l => l.isFooter)
+  expect(footer.find(l => l.tabs)?.tabs).toEqual(['cost', 'skills', 'agents'])
+  expect(footer.map(l => l.text).slice(-2)).toEqual(['Main and subagents per type, model and effort, per prompt and per session', '  no agents yet'])
 })

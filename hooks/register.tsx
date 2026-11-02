@@ -10,6 +10,7 @@ import { costOf, rankCost, totalTokens, withStep } from './pricing'
 import type { StepUsage } from './pricing'
 import { isTypedPrompt, promoteQueued, viewOf, withPrompt } from './prompt'
 import { TAB_LABELS, buildTree, fitLines } from './tree'
+import { withMainStep, withUsage } from './usage'
 import type { FooterTab } from './tree'
 
 const PANE = 'agent-monitor'
@@ -40,7 +41,7 @@ const initial: AgentMonitorState = {
 // Change the tag when a row's fields change: it declines what an earlier
 // version stored, which outlives a reload.
 const monitor = atom({ plugin: 'agent-monitor', key: 'monitor' } as const, initial, {
-  shape: 'monitor-6',
+  shape: 'monitor-7',
 })
 
 // The footer tab the person last picked.
@@ -398,7 +399,9 @@ export const register: Register = on => {
       return { turnId: e.turnId, index: e.index, answer: '', toolUses: [], stopReason: null, usage: null }
     }
     await update($, monitor, s =>
-      change(s, e.agentId, now, r => ({ ...r, model: e.model, effort: e.effort })),
+      e.agentId
+        ? withUsage(change(s, e.agentId, now, r => ({ ...r, model: e.model, effort: e.effort })), e.agentId)
+        : withMainStep(change(s, e.agentId, now, r => ({ ...r, model: e.model, effort: e.effort })), { model: e.model, effort: e.effort, usd: 0, tokens: 0, isPriced: true }),
     )
 
     await nameStub($, e.agentId)
@@ -448,6 +451,11 @@ export const register: Register = on => {
           isPriced: r.isPriced && usd !== undefined,
           breakdown: withStep(r.breakdown, usage, ttlMs, did || 'answer'),
         })),
+      )
+      await update($, monitor, s =>
+        e.agentId
+          ? withUsage(s, e.agentId)
+          : withMainStep(s, { model: e.model, effort: e.effort, usd: usd ?? 0, tokens: totalTokens(usage), isPriced: usd !== undefined }),
       )
       await update($, monitor, s => {
         const row = e.agentId ? s.agents.find(a => a.id === e.agentId) : s.main
@@ -514,6 +522,7 @@ export const register: Register = on => {
         agents: rest.filter(a => a.id !== agentId).concat(merged).slice(-KEEP),
       }
     })
+    if (spawned.agentId && spawned.deny === undefined) await update($, monitor, s => withUsage(s, spawned.agentId))
 
     return spawned
   })

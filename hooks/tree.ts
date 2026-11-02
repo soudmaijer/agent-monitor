@@ -1,6 +1,8 @@
 import type { AgentMonitorBreakdown, AgentMonitorCache, AgentMonitorRow, AgentMonitorState, AgentMonitorTask } from '../types'
 import { truncate } from './describe'
 import { formatSpend, formatTokens, formatUsd } from './pricing'
+import { groupUsage, mainUsageOf, usageOf } from './usage'
+import type { UsageGroup } from './usage'
 import { bar, countProgress, expectedDurationMs, progressOf } from './progress'
 
 const SHOWN_TASKS = 5
@@ -33,21 +35,23 @@ export type TreeLine = {
   toggles?: string
 }
 
-export type FooterTab = 'cost' | 'skills'
+export type FooterTab = 'cost' | 'skills' | 'agents'
 
-export const TAB_LABELS: Record<FooterTab, string> = { cost: 'Cost', skills: 'Skills & rules' }
+export const TAB_LABELS: Record<FooterTab, string> = { cost: 'Cost', skills: 'Skills & rules', agents: 'Agents' }
 
 /** One line under the tab bar saying what the selected tab lists. */
 const TAB_DESCRIPTIONS: Record<FooterTab, string> = {
   cost: 'Costs per prompt and per session',
   skills: 'Skills invoked and rules loaded per prompt and per session',
+  agents: 'Main and subagents per type, model and effort, per prompt and per session',
 }
 
-/** The tabs in bar order. Skills & rules stays beside Cost even while empty, so it never seems lost. */
+/** The tabs in bar order. Skills & rules and Agents stay beside Cost even while empty, so they never seem lost. */
 const availableTabs = (state: AgentMonitorState): FooterTab[] => {
   const hasLoaded = (state.sessionSkills ?? []).length > 0 || (state.sessionRules ?? []).length > 0
-  if (state.sessionUsd !== undefined) return ['cost', 'skills']
-  return hasLoaded ? ['skills'] : []
+  const agents: FooterTab[] = (state.sessionAgents ?? []).length > 0 ? ['agents'] : []
+  if (state.sessionUsd !== undefined) return ['cost', 'skills', 'agents']
+  return [...(hasLoaded ? ['skills' as const] : []), ...agents]
 }
 
 /** The rows under the tab bar for the selected tab. */
@@ -61,6 +65,7 @@ const tabLines = (state: AgentMonitorState, tab: FooterTab, now: number, expande
       ...topCostLines(state, expanded),
     ]
   }
+  if (tab === 'agents') return agentLines(state)
   const promptSkills = state.promptSkills ?? []
   const sessionSkills = state.sessionSkills ?? []
   const promptRules = state.promptRules ?? []
@@ -102,20 +107,48 @@ const topCostLines = (state: AgentMonitorState, expanded: string[]): TreeLine[] 
   ]
 }
 
-const BREAKDOWN_INDENT = ' '.repeat(14)
+const BREAKDOWN_INDENT = ' '.repeat(3)
 
-/** What one entry of the top list consists of: per kind of token, then its priciest requests. */
+/** What one entry of the top list consists of: per kind of token, then its priciest requests, drawn as a tree under the entry. */
 const breakdownLines = (b: AgentMonitorBreakdown): TreeLine[] => {
+  const branch = (isLast: boolean) => `${BREAKDOWN_INDENT}${isLast ? '└─' : '├─'} `
   const part = (name: string, p: { usd: number; tokens: number }) =>
-    line({ isFooter: true, text: `${BREAKDOWN_INDENT}${name.padEnd(12)}${formatUsd(p.usd).padStart(6)}  ${formatTokens(p.tokens)}` })
+    line({ isFooter: true, text: `${branch(false)}${name.padEnd(12)}${formatUsd(p.usd).padStart(6)}  ${formatTokens(p.tokens)}` })
   return [
-    line({ isFooter: true, isDim: true, text: `${BREAKDOWN_INDENT}${b.steps} ${b.steps === 1 ? 'request' : 'requests'}` }),
+    line({ isFooter: true, isDim: true, text: `${branch(false)}${b.steps} ${b.steps === 1 ? 'request' : 'requests'}` }),
     part('cache write', b.cacheWrite),
     part('cache read', b.cacheRead),
     part('output', b.output),
     part('input', b.input),
-    line({ isFooter: true, isDim: true, text: `${BREAKDOWN_INDENT}priciest requests` }),
-    ...b.top.map(s => line({ isFooter: true, text: `${BREAKDOWN_INDENT}  ${formatUsd(s.usd).padStart(6)}  ${s.label}` })),
+    line({ isFooter: true, isDim: true, text: `${branch(true)}priciest requests` }),
+    ...b.top.map((s, i) =>
+      line({ isFooter: true, text: `${BREAKDOWN_INDENT}   ${i === b.top.length - 1 ? '└─' : '├─'} ${formatUsd(s.usd).padStart(6)}  ${s.label}` }),
+    ),
+  ]
+}
+
+/** Main and the subagents of the prompt and of the session, grouped; one list when both are the same. */
+const agentLines = (state: AgentMonitorState): TreeLine[] => {
+  const subagents = state.agents.filter(a => a.toolUseId !== a.id).map(usageOf)
+  const prompt = groupUsage([...mainUsageOf(state, state.promptId ?? 0), ...subagents])
+  const session = groupUsage(state.sessionAgents ?? [])
+  if (session.length === 0) return [line({ isFooter: true, text: '  no agents yet', isDim: true })]
+  const isSame = prompt.length === session.length && prompt.every((g, i) => g.label === session[i]?.label && g.count === session[i]?.count)
+  return isSame
+    ? usageList('prompt & session', session)
+    : [...usageList('prompt', prompt), ...usageList('session', session)]
+}
+
+const usageList = (label: string, groups: UsageGroup[]): TreeLine[] => {
+  const total = groups.reduce((sum, g) => sum + g.count, 0)
+  const width = Math.max(0, ...groups.map(g => g.label.length))
+  return [
+    line({ isFooter: true, text: `  ${label} (${total})` }),
+    ...groups.map(g => {
+      const spend = formatSpend(g)
+      const text = `    • ${g.label.padEnd(width)}  ${`${g.count}×`.padStart(3)}${spend ? `  ${spend.padStart(7)}` : ''}`
+      return line({ isFooter: true, text })
+    }),
   ]
 }
 

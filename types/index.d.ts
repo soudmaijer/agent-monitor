@@ -28,6 +28,17 @@ export type AgentMonitorRow = {
   endedAt?: number
 }
 
+/** A subagent as the Agents tab counts it: what it ran as, and what it cost. */
+export type AgentMonitorUsage = {
+  id: string
+  type: string
+  model?: string
+  effort?: AgentMonitorEffort
+  usd: number
+  tokens: number
+  isPriced: boolean
+}
+
 /** One tool call of the main loop. */
 export type AgentMonitorTask = {
   id: string
@@ -71,6 +82,8 @@ export type AgentMonitorSnapshot = {
   promptSkills: string[]
   promptRules: string[]
   /** The session's cost when the prompt was submitted, and when the next one replaced it. */
+  /** The prompt's id, so the Agents tab finds main's usage of that prompt. */
+  promptId?: number
   startUsd: number
   endUsd: number
 }
@@ -112,6 +125,8 @@ export type AgentMonitorState = {
   topCosts?: AgentMonitorCost[]
   /** The session's working folder, which the shown paths are relative to. */
   cwd?: string
+  /** Every subagent of the session, the last 200; `agents` keeps the current prompt's only. */
+  sessionAgents?: AgentMonitorUsage[]
   main: AgentMonitorRow
   /** The last `seq` handed out. */
   seq: number
@@ -120,6 +135,6 @@ export type AgentMonitorState = {
 
 declare module 'claude-code' {
   interface PluginState {
-    'agent-monitor': { monitor: Shaped<AgentMonitorState>; tick: Shaped<number>; footerTab: Shaped<'cost' | 'skills' | 'rules'>; viewing: Shaped<number>; expanded: Shaped<string[]> }
+    'agent-monitor': { monitor: Shaped<AgentMonitorState>; tick: Shaped<number>; footerTab: Shaped<'cost' | 'skills' | 'agents' | 'rules'>; viewing: Shaped<number>; expanded: Shaped<string[]> }
   }
 }

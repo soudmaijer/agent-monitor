@@ -70,6 +70,7 @@ const snapshotOf = (s: AgentMonitorState): AgentMonitorSnapshot => {
     agents: s.agents.map(a => frozen(a, at)),
     promptSkills: s.promptSkills ?? [],
     promptRules: s.promptRules ?? [],
+    promptId: s.promptId,
     startUsd: s.promptStartUsd ?? 0,
     endUsd: s.sessionUsd ?? 0,
   }
@@ -87,6 +88,7 @@ export const viewOf = (s: AgentMonitorState, snapshot: AgentMonitorSnapshot): Ag
   agents: snapshot.agents,
   promptSkills: snapshot.promptSkills,
   promptRules: snapshot.promptRules,
+  promptId: snapshot.promptId,
   // The prompt line is drawn as the live session cost minus the prompt's start.
   promptStartUsd: (s.sessionUsd ?? 0) - (snapshot.endUsd - snapshot.startUsd),
   contextPercent: undefined,
