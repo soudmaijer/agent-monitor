@@ -309,7 +309,7 @@ export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     await $.command.register({
       name: 'agent-monitor',
-      description: 'Show the running agents, models and effort in a pane',
+      description: 'Show the running agents, models and effort in a pane (`hide` closes it)',
     })
     await update($, monitor, s => ({ ...s, cwd: e.cwd }))
     // A new session, or a reload, starts with no requests seen.
@@ -322,7 +322,12 @@ export const register: Register = on => {
     return next(e)
   })
 
-  on('command.run', { command: 'agent-monitor' }, async $ => {
+  on('command.run', { command: 'agent-monitor' }, async ($, e) => {
+    if (e.args.trim() === 'hide') {
+      await $.ui.close({ id: PANE })
+
+      return { text: 'Agent monitor pane hidden. Run /agent-monitor to show it again.' }
+    }
     await $.ui.open({ id: PANE, title: 'Agents' })
 
     return { text: 'Agent monitor pane opened.' }
